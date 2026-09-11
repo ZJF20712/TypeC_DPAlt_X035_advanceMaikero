@@ -13,14 +13,11 @@
 #include "apu_i2c.h"
 #include "uart4_dbg.h"
 
-#if APU_DBG_UART4_ENABLE
-/* UART4 调试占用 PA5(SPI1 默认 SCK，QNF20 上 SPI1 无其他引脚组)，
- * 调试期间跳过灯带 SPI 初始化；后续灯带状态色调用 send_byte 内
- * is_spi_initialized 守卫自动旁路（LED 功能让位于串口日志） */
-#define LED_STRIP_ENABLE 0
-#else
+/* LED(WS2812, 仅用 MOSI=PA7) 与 UART4_TX(PA5) 共存:
+ * WS2812 是单线器件，SCK 引脚对其无意义——led_strip 的 spi_init 从未把
+ * PA5 配置为 AF，SPI 的 MOSI 波形由内部时钟独立驱动，因此 PA5 让给
+ * UART4 不影响 LED 数据输出（实测确认两者共存正常）。 */
 #define LED_STRIP_ENABLE 1
-#endif
 
 #if LED_STRIP_ENABLE
 static void led_strip_rainbow_effect(void) {
@@ -51,15 +48,13 @@ int main(void) {
     millis_init();
     adc_init();
 
-#if LED_STRIP_ENABLE
-    // LED Strip
+    // LED Strip（PA7/MOSI，与 UART4 的 PA5 共存）
     led_strip_init();
     led_strip_rainbow_effect();
     /* 上电动画结束停在品红帧，显式设回空闲红（无设备基线色） */
     led_strip_set_pixel_with_refresh(0, 0x0A, 0x00, 0x00);
-#endif
 
-    /* UART4 调试口（PA5 -> COM26，RV-LinkE）尽早可用，接管 CDC */
+    /* UART4 调试口（PA5 -> COM26，RV-LinkE）尽早可用 */
     uart4_dbg_init();
 
     /* APU 侧 IO：HPD(PB1)=低 / APU_RST#(PB3) / INT(PB11+EXTI) */

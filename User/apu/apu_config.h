@@ -69,7 +69,7 @@
  * 0 = LED 状态灯模式: 灯带照常显示状态色（attach/合同/DP/失败），
  *     uart4_dbg 系列函数在 uart4_dbg.h 内退化为空函数，调用点零开销。
  *     （RAM 日志环不受影响，调试器 halt 仍可经 tools/trace_log.py 抓取） */
-#define APU_DBG_UART4_ENABLE       0 /* LED 状态灯模式 */
+#define APU_DBG_UART4_ENABLE       1 /* 串口调试 + LED 共存 */
 #define APU_DBG_UART4_BAUDRATE     115200
 #define APU_DBG_UART4_REMAP        0x1 /* USART4_RM=001b -> TX=PA5 */
 
