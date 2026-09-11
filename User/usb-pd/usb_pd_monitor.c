@@ -2,86 +2,71 @@
 
 #include "ch32x035_usbpd.h"
 #include "debug.h"
-#include "usb_cdc_print.h"
+#include "millis.h"
 #include "usb_pd_cc.h"
+#include "usb_pd_log.h"
 #include "usb_pd_message.h"
-
-/* PD RX Buuffer */
-__attribute__((aligned(4))) static uint8_t usb_pd_rx_buffer[PD_MSG_MAX_LEN];
+#include "usb_pd_phy.h"
+#include "usb_pd_policy.h"
 
 /* CC 连接状态 */
 static cc_state_t cc_state = {0};
 
 /**
- * @brief  配置为接收模式
- */
-static void set_rx_mode(void) {
-    USBPD->CONFIG |= PD_ALL_CLR;
-    USBPD->CONFIG &= ~PD_ALL_CLR;
-    USBPD->CONFIG |= IE_RX_ACT | IE_RX_RESET | PD_DMA_EN;
-    USBPD->DMA = (uint32_t)(uint8_t *)usb_pd_rx_buffer;
-    USBPD->CONTROL &= ~PD_TX_EN;
-    USBPD->BMC_CLK_CNT = UPD_TMR_RX_48M;
-    USBPD->CONTROL |= BMC_START;
-    NVIC_EnableIRQ(USBPD_IRQn);
-}
-
-/**
- * @brief  初始化 USB PD 监听
+ * @brief  初始化 USB PD（CC 检测 + PHY 收发 + SRC 策略机）
  */
 void usb_pd_monitor_init(void) {
     // 使能时钟
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBPD, ENABLE);
 
-    // 初始化 CC 引脚
+    // CC 检测（SRC 角色 Rp 上拉）
     usb_pd_cc_init();
 
-    USBPD->STATUS = BUF_ERR | IF_RX_BIT | IF_RX_BYTE | IF_RX_ACT | IF_RX_RESET;
+    // PD 物理层（中断接收 + GoodCRC 自动应答）
+    usb_pd_phy_init();
 
-    // 配置接收模式
-    set_rx_mode();
+    // SRC 策略机
+    usb_pd_policy_init();
 }
 
 /**
- * @brief  USB PD 监听处理函数
+ * @brief  USB PD 周期处理（主循环 10ms 调用）
  */
 void usb_pd_monitor_process(void) {
-    // 从 buffer 读取并处理 PD 消息
-    pd_msg_buffer_t *msg_buffer = get_message_buffer();
-    while (msg_buffer->read_idx != msg_buffer->write_idx) {                     // 判断是否有新消息
-        print_message(&msg_buffer->msgs[msg_buffer->read_idx]);                 // 打印消息
-        msg_buffer->read_idx = (msg_buffer->read_idx + 1) % PD_MSG_BUFFER_SIZE; // 更新读指针
+    static uint32_t diag_ms = 0;
+    static uint16_t diag_bit = 0, diag_byte = 0;
+
+    // RX 位级活动诊断：统计帧前导/位活动标志（整帧解不出也会置位）
+    uint8_t st = USBPD->STATUS;
+    if (st & (IF_RX_BIT | IF_RX_BYTE)) {
+        USBPD->STATUS |= (IF_RX_BIT | IF_RX_BYTE);
+        if (st & IF_RX_BIT) diag_bit++;
+        if (st & IF_RX_BYTE) diag_byte++;
     }
 
-    // 检测 CC 连接状态
+    // CC 连接状态检测（attach/detach 驱动策略机）
     usb_pd_cc_check_connection(&cc_state);
-}
 
-/**
- * @brief  USB PD 中断处理函数
- */
-void USBPD_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void USBPD_IRQHandler(void) {
-    uint8_t status = USBPD->STATUS;
-    uint16_t byte_cnt = USBPD->BMC_BYTE_CNT;
+    // 策略机周期处理（定时发送：SourceCap / PS_RDY / VDM 流程）
+    usb_pd_policy_process();
 
-    if (status & IF_RX_ACT) {
-        USBPD->STATUS |= IF_RX_ACT;
+    // 处理并打印消息缓冲区中的新消息
+    pd_msg_buffer_t *msg_buffer = get_message_buffer();
+    while (msg_buffer->read_idx != msg_buffer->write_idx) {
+        pd_msg_t *msg = &msg_buffer->msgs[msg_buffer->read_idx];
 
-        if ((status & MASK_PD_STAT) && byte_cnt >= 6) {
-            save_message(status, usb_pd_rx_buffer, byte_cnt);
-        }
+        // 先交给策略机（保证响应时延），再打印
+        usb_pd_policy_handle_msg(msg);
+        print_message(msg);
+
+        msg_buffer->read_idx = (msg_buffer->read_idx + 1) % PD_MSG_BUFFER_SIZE;
     }
 
-    if (status & IF_RX_RESET) {
-        USBPD->STATUS |= IF_RX_RESET;
-        // usb_pd_cc_detach(&cc_state);
-        // 将 RX_RESET 事件保存到消息缓冲区
-        save_message(status, NULL, 0);
+    // 每秒输出一次 RX 位级活动统计
+    if (millis() - diag_ms >= 1000) {
+        diag_ms = millis();
+        pd_logf("%ums RX diag: bit=%u byte=%u\r\n", millis(), diag_bit, diag_byte);
+        diag_bit = 0;
+        diag_byte = 0;
     }
-
-    // if (status & BUF_ERR) {
-    //     USBPD->STATUS |= BUF_ERR;
-    //     cdc_acm_printf("\nBUF_ERR\n");
-    // }
 }

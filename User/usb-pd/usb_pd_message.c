@@ -3,7 +3,7 @@
 #include "ch32x035_usbpd.h"
 #include "debug.h"
 #include "millis.h"
-#include "usb_cdc_print.h"
+#include "usb_pd_log.h"
 #include "usb_vbus_measure.h"
 
 static pd_msg_buffer_t msg_buffer = {0};
@@ -165,11 +165,11 @@ static const char *get_direction_str(uint32_t status, pd_msg_header_t *header) {
  */
 void print_message(pd_msg_t *msg) {
     // 时间，电压，序号，SOP，原始数据
-    // cdc_acm_printf("%u,%u,%u,%u,", msg->timestamp_ms, adc_raw_to_vbus_mv(msg->vbus_raw), msg->msg_id, msg->status & MASK_PD_STAT);
+    // pd_logf("%u,%u,%u,%u,", msg->timestamp_ms, adc_raw_to_vbus_mv(msg->vbus_raw), msg->msg_id, msg->status & MASK_PD_STAT);
     // for (uint8_t i = 0; i < msg->len; i++) {
-    //     cdc_acm_printf("%02X", msg->data[i]);
+    //     pd_logf("%02X", msg->data[i]);
     // }
-    // cdc_acm_printf("\n");
+    // pd_logf("\n");
 
     pd_msg_header_t header_tmp;
     memcpy(&header_tmp, msg->data, sizeof(pd_msg_header_t));
@@ -182,39 +182,39 @@ void print_message(pd_msg_t *msg) {
     uint8_t data_len = 2 + (header->NumberOfDataObjects * 4); // 头部 2 字节 + 数据对象长度
 
     // 时间 电压 序号 SOP
-    cdc_acm_printf("%ums %05umV #%03u %-5s ", msg->timestamp_ms, adc_raw_to_vbus_mv(msg->vbus_raw), msg->msg_id, get_sop_type_name(msg->status));
+    pd_logf("%ums %05umV #%03u %-5s ", msg->timestamp_ms, adc_raw_to_vbus_mv(msg->vbus_raw), msg->msg_id, get_sop_type_name(msg->status));
 
     if (msg->status & IF_RX_RESET) {
-        cdc_acm_prints("RX_RESET\n");
+        pd_logf("RX_RESET\r\n");
         return;
     }
 
     // 消息类型
     if (header->Extended) {
-        cdc_acm_printf("%-15s ", find_msg_type_name(header->MessageType, ext_msg_desc, "Ext"));
+        pd_logf("%-15s ", find_msg_type_name(header->MessageType, ext_msg_desc, "Ext"));
     } else {
-        cdc_acm_printf("%-15s ", get_message_type_name(header));
+        pd_logf("%-15s ", get_message_type_name(header));
     }
 
     // 消息 ID
-    cdc_acm_printf("%u ", header->MessageID);
+    pd_logf("%u ", header->MessageID);
 
     // 方向
-    cdc_acm_printf("%s ", get_direction_str(msg->status, header));
+    pd_logf("%s ", get_direction_str(msg->status, header));
 
     // 版本
-    cdc_acm_printf("V%u ", header->SpecificationRevision + 1);
+    pd_logf("V%u ", header->SpecificationRevision + 1);
 
     // 数据对象数量
-    // cdc_acm_printf("%-1u ", header->NumberOfDataObjects);
+    // pd_logf("%-1u ", header->NumberOfDataObjects);
 
     // 消息头
-    cdc_acm_printf("[H]0x%02X%02X", msg->data[1], msg->data[0]);
+    pd_logf("[H]0x%02X%02X", msg->data[1], msg->data[0]);
 
     // 数据对象
     if (msg->len > 2) {
         for (uint8_t i = 0; i < header->NumberOfDataObjects; i++) {
-            cdc_acm_printf("[%u]0x%02X%02X%02X%02X",
+            pd_logf("[%u]0x%02X%02X%02X%02X",
                            i,
                            msg->data[2 + i * 4 + 3],
                            msg->data[2 + i * 4 + 2],
@@ -225,7 +225,7 @@ void print_message(pd_msg_t *msg) {
 
     // CRC32
     if (msg->len >= data_len + 4) {
-        cdc_acm_printf("[CRC]0x%02X%02X%02X%02X",
+        pd_logf("[CRC]0x%02X%02X%02X%02X",
                        msg->data[data_len + 3],
                        msg->data[data_len + 2],
                        msg->data[data_len + 1],
@@ -234,13 +234,13 @@ void print_message(pd_msg_t *msg) {
 
     // 检查连续的消息类型
     if (is_goodcrc && last_msg_was_goodcrc) {
-        cdc_acm_printf(" ←WARN!!");
+        pd_logf(" ←WARN!!");
     }
     if (!is_goodcrc && !last_msg_was_goodcrc && msg->msg_id != 1) {
-        cdc_acm_printf(" ←WARN!!");
+        pd_logf(" ←WARN!!");
     }
 
-    cdc_acm_printf("\n");
+    pd_logf("\r\n");
 
     // 更新状态
     last_msg_was_goodcrc = is_goodcrc;
@@ -252,8 +252,9 @@ void print_message(pd_msg_t *msg) {
  * @param  status STATUS 寄存器值
  * @param  data 消息数据
  * @param  len 消息长度
+ * @param  dir 消息方向
  */
-void save_message(uint32_t status, uint8_t *data, uint8_t len) {
+void save_message(uint32_t status, uint8_t *data, uint8_t len, pd_msg_dir_t dir) {
     // 当前索引
     uint16_t curr_idx = msg_buffer.write_idx;
     // 下一个写入位置
@@ -265,9 +266,12 @@ void save_message(uint32_t status, uint8_t *data, uint8_t len) {
     }
 
     // 保存
-    memcpy(msg_buffer.msgs[curr_idx].data, data, len);
+    if (data != NULL && len > 0) {
+        memcpy(msg_buffer.msgs[curr_idx].data, data, len);
+    }
     msg_buffer.msgs[curr_idx].len = len;
     msg_buffer.msgs[curr_idx].status = status;
+    msg_buffer.msgs[curr_idx].dir = dir;
     msg_buffer.msgs[curr_idx].msg_id = ++pdMessage.msg_counter;
     msg_buffer.msgs[curr_idx].timestamp_ms = millis();
     msg_buffer.msgs[curr_idx].vbus_raw = adc_get_avg_raw();

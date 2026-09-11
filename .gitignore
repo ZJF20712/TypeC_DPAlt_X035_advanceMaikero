@@ -8,3 +8,9 @@ obj/
 *.launch
 
 *.DS_Store
+
+tools/uart_capture_*.log
+tools/__pycache__/
+tools/amd_pd_guide.txt
+tools/ch32x035_rm.txt
+tools/ch32x035_ds.txt

@@ -22,7 +22,7 @@
 				"name": "*.wvproj"
 			}
 		],
-		"projectName": "usb-pd-sniffer",
+		"projectName": "usb-pd-dp-amd",
 		"architecture": "RISC-V",
 		"projectType": "c"
 	},

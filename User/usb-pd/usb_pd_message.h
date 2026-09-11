@@ -33,6 +33,7 @@ typedef struct {
     volatile uint16_t vbus_raw;     // VBUS 电压 (raw)
     volatile uint32_t timestamp_ms; // 运行时间 (ms)
     volatile uint8_t len;           // 消息长度
+    volatile uint8_t dir;           // 消息方向 pd_msg_dir_t
     uint8_t data[PD_MSG_MAX_LEN];   // 消息数据
 } pd_msg_t;
 
@@ -46,8 +47,14 @@ typedef struct {
 /* 控制消息类型 */
 #define CTRL_GOODCRC 0x01
 
+/* 消息方向 */
+typedef enum {
+    PD_MSG_DIR_RX = 0, // 接收
+    PD_MSG_DIR_TX = 1, // 发送
+} pd_msg_dir_t;
+
 /* 函数声明 */
 void print_message(pd_msg_t *msg);
-void save_message(uint32_t status, uint8_t *data, uint8_t len);
+void save_message(uint32_t status, uint8_t *data, uint8_t len, pd_msg_dir_t dir);
 void reset_message_counter(void);
 pd_msg_buffer_t *get_message_buffer(void);

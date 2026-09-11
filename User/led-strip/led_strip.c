@@ -82,6 +82,10 @@ void led_strip_clear(void) {
 }
 
 void led_strip_refresh(void) {
+    /* SPI 未初始化时直接旁路（调试串口占用 PA5/SPI1-SCK 期间灯带停用，
+     * 此时 SPI1 时钟未开，直接读 STATR 会死等） */
+    if (!is_spi_initialized) return;
+
     for (uint16_t i = 0; i < LED_STRIP_LENGTH; i++) {
         led_strip_send_byte(((uint8_t*)&led_buffer[i])[0]);
         led_strip_send_byte(((uint8_t*)&led_buffer[i])[1]);
