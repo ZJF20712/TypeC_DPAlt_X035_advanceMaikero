@@ -98,6 +98,10 @@
 /* Polling 稳态状态轮询周期（维护 Crossbar Ready 镜像 / 目标失联检测） */
 #define APU_CB_STATUS_POLL_MS 50
 
+/* "命令进行中"(00b) 的总等待上限: SoC 控制器未就绪时（内存训练/BIOS 初始化）
+ * crossbar 握手可能远超单笔 250ms 超时，00b 视为等待而非失败 */
+#define APU_CB_WAIT_MAX_MS   10000
+
 /* ---------------- DP Alt 双向支持 ----------------
  * APU 的 DP AUX 极性固定（内部 crossbar 只翻转 ML 通道），反插朝向下
  * SBU1/SBU2 对调导致 AUX 反极性——EDID/DPCD 读不到，DP 协商"成功"也无画面。

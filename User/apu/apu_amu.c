@@ -53,6 +53,7 @@ static uint8_t amu_retries = 0;
 static uint32_t amu_deadline = 0;      /* 当前步 250ms 软超时 */
 static uint32_t amu_next_poll_ms = 0;  /* 轮询/重试节拍 */
 static uint32_t amu_safe_done_ms = 0;  /* SAFE 完成时刻（84ms 停留监测） */
+static uint32_t amu_write_start_ms = 0; /* 当前命令写入时刻（in-progress 等待上限） */
 static uint32_t amu_sync_fail_log_ms = 0; /* 同步失败日志节流 */
 
 /* ================= 工具 ================= */
@@ -281,27 +282,11 @@ static void amu_sm_polling(void) {
             cb_mirror_valid = true;
             cb_apply_hpd_rule(cb_mirror_mode);
 
-            if (mode != APU_CB_SAFE) {
-                /* 非 Safe: 可写，立刻写 Safe（同步步，不覆盖用户请求字段） */
-                uint8_t ctrl = cb_ctrl_byte(true, APU_CB_SAFE, ori);
-                pd_logf("%ums APU: post-RST CB not Safe -> write Safe now\r\n", millis());
-                pd_logf("%ums APU: CB write [%02X %02X] CC? ORI=%s(%u) MODE=Safe(0)%s\r\n",
-                        millis(), 0x00, ctrl, ori_name(ori), ori, " [sync step]");
-                r = cb_write_ctrl(ctrl);
-                if (r != APU_I2C_OK) {
-                    /* 写失败: 回到 SYNC 下轮重试（读已成功说明目标在） */
-                    pd_logf("%ums APU: sync safe write fail res=%d, retry\r\n", millis(), r);
-                    amu_phase = AMU_PH_SYNC;
-                    return;
-                }
-                amu_step_safe = true;
-                amu_did_safe = true;
-                amu_sync_safe = true;
-                amu_deadline = millis() + APU_CB_CMD_TIMEOUT_MS;
-                amu_next_poll_ms = 0;
-                amu_phase = AMU_PH_SAFE;
-            } else if (cb_req_active) {
-                /* 已是 Safe: 若有待执行请求则直接进入其目标步检查 */
+            /* 不再无条件写 Safe: 文档规定 warm reset 后 crossbar 保持最后成功
+             * 状态（实测 DP4 跨重启保持），无谓的 Safe 写会打断正常显示。
+             * "回 Safe"的安全基线由 reconciler 派生（IDLE->want=Safe）覆盖；
+             * 有待执行请求则进入其写前检查，否则收工 */
+            if (cb_req_active) {
                 amu_next_poll_ms = 0;
                 amu_phase = AMU_PH_CHECK;
             } else {
@@ -334,15 +319,21 @@ static void amu_sm_polling(void) {
             return;
         }
         if (st_p0_status(st) == 0) {
-            /* 前一条命令仍在进行，禁止写（节流打印原始状态用于诊断） */
+            /* 前一条命令仍在进行，禁止写。
+             * SoC 控制器未就绪时（内存训练/BIOS 初始化）握手可能远超
+             * 250ms——顺延 deadline 持续等待，总时长超过看门狗才放弃 */
             static uint32_t chk_raw_log_ms = 0;
             if (millis() - chk_raw_log_ms >= 1000) {
                 chk_raw_log_ms = millis();
-                pd_logf("%ums APU: CB check raw [%02X %02X %02X] prev-in-progress\r\n",
+                pd_logf("%ums APU: CB check raw [%02X %02X %02X] prev-in-progress (waiting)\r\n",
                         millis(), st[0], st[1], st[2]);
             }
             if (step_timed_out()) {
-                step_fail_retry("check", "prev cmd in progress");
+                if (millis() - amu_write_start_ms < APU_CB_WAIT_MAX_MS) {
+                    amu_deadline = millis() + APU_CB_CMD_TIMEOUT_MS;
+                } else {
+                    step_fail_retry("check", "prev cmd in progress");
+                }
             }
             return;
         }
@@ -360,6 +351,7 @@ static void amu_sm_polling(void) {
                     amu_step_safe ? 0 : cb_req_mode,
                     amu_step_safe ? " [safe step]" : "");
         }
+        amu_write_start_ms = millis();
         r = cb_write_ctrl(cb_ctrl_byte(amu_step_safe, cb_req_mode, cb_req_ori));
         amu_deadline = millis() + APU_CB_CMD_TIMEOUT_MS;
         if (r != APU_I2C_OK) {
@@ -388,15 +380,19 @@ static void amu_sm_polling(void) {
         link_cb_ready = st_ready(st);
         stt = st_p0_status(st);
         if (stt == 0) {
-            /* 命令进行中，继续轮询（节流打印原始状态用于诊断） */
+            /* 命令进行中: 顺延 deadline 持续轮询，总看门狗封顶后放弃 */
             static uint32_t poll_raw_log_ms = 0;
             if (millis() - poll_raw_log_ms >= 1000) {
                 poll_raw_log_ms = millis();
-                pd_logf("%ums APU: CB poll raw [%02X %02X %02X] step=%s\r\n", millis(),
+                pd_logf("%ums APU: CB poll raw [%02X %02X %02X] step=%s (waiting)\r\n", millis(),
                         st[0], st[1], st[2], amu_phase == AMU_PH_SAFE ? "safe" : "target");
             }
             if (step_timed_out()) {
-                step_fail_retry("poll", "cmd still in progress");
+                if (millis() - amu_write_start_ms < APU_CB_WAIT_MAX_MS) {
+                    amu_deadline = millis() + APU_CB_CMD_TIMEOUT_MS;
+                } else {
+                    step_fail_retry("poll", "cmd still in progress");
+                }
             }
             return;
         }

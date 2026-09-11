@@ -233,6 +233,37 @@ static void amu_hpd_derive(void) {
     apu_io_hpd_request(want_hpd);
 }
 
+/* CrossBar 派生指示灯状态（边沿刷新，避免重发 WS2812 数据） */
+static bool amu_led_dp_pink = false;
+static bool amu_led_usb_purple = false;
+
+/**
+ * @brief  CrossBar 派生指示灯（策略机周期调用）
+ *         优先级: DP 粉(握手 ACK + CrossBar DP 通路完成) > USB3 紫(USB3 配置完成)；
+ *         两者都不满足时保持当前色（attach 蓝/绿、合同白、空闲红由事件维护）
+ */
+static void amu_led_derive(void) {
+    if (!apu_amu_mirror_valid() || apu_amu_cb_busy()) {
+        return; /* 切换进行中/镜像未同步: 保持当前色 */
+    }
+
+    bool pink = apu_amu_dp_path_active();
+    bool purple = !pink && (apu_amu_cb_mode() == APU_CB_USB3);
+
+    if (pink != amu_led_dp_pink) {
+        amu_led_dp_pink = pink;
+        if (pink) {
+            led_strip_set_pixel_with_refresh(0, 0x0A, 0x05, 0x06); /* 粉: DP(含 DP+USB) 就绪 */
+        }
+    }
+    if (purple != amu_led_usb_purple) {
+        amu_led_usb_purple = purple;
+        if (purple) {
+            led_strip_set_pixel_with_refresh(0, 0x0A, 0x00, 0x0A); /* 紫: USB3 就绪 */
+        }
+    }
+}
+
 /* ================= 前置声明 ================= */
 static uint32_t dp_conf_vdo(void);
 static void dp_fail(const char *reason);
@@ -640,7 +671,7 @@ static void dp_handle_rsp(uint32_t vh, const uint32_t *vdo, uint8_t cnt) {
         pd_logf("%ums DP: Configure ACK - DP Alt Mode ACTIVE (pin %s)\r\n",
                         millis(), dp_pin_name(dp_pin_assign));
         dp_step = DP_STEP_DONE;
-        led_strip_set_pixel_with_refresh(0, 0x02, 0x0A, 0x0A); /* 冰蓝: DP Alt Mode ACTIVE */
+        /* 点灯由 amu_led_derive 派生: 握手 ACK 且 CrossBar 切换完成才亮粉色 */
         break;
 
     default:
@@ -844,9 +875,10 @@ static void dp_send_req_start(void) {
 void usb_pd_policy_process(void) {
     uint32_t now = millis();
 
-    /* AMD Crossbar 协调与 HPD 门控派生（按当前策略状态收敛） */
+    /* AMD Crossbar 协调与 HPD 门控、DP 指示灯派生（按当前策略状态收敛） */
     amu_reconcile();
     amu_hpd_derive();
+    amu_led_derive();
 
     switch (src_state) {
     case PD_SRC_STATE_ATTACHED:
@@ -880,7 +912,7 @@ void usb_pd_policy_process(void) {
             /* tSrcTransition 后发送 PS_RDY */
             if (send_ctrl(DEF_TYPE_PS_RDY) == PD_PHY_TX_OK) {
                 pd_logf("%ums SRC: Contract established 5V3A\r\n", millis());
-                led_strip_set_pixel_with_refresh(0, 0x0A, 0x00, 0x0A); // RGB PURPLE
+                led_strip_set_pixel_with_refresh(0, 0x0A, 0x0A, 0x0A); /* 白: PD 合同建立 */
                 src_state = PD_SRC_STATE_RUNNING;
                 state_timer = millis();
                 /* 首次建立合同后启动 DP Alt Mode VDM 握手 */
